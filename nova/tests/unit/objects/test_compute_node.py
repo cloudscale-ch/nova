@@ -458,6 +458,16 @@ class _TestComputeNodeObject(object):
         expected = fake_compute_with_resources
         self.assertTrue(base.obj_equal_prims(expected, compute))
 
+    def test_update_from_virt_driver_ignore_some_keys(self):
+        resources = copy.deepcopy(fake_resources)
+        compute = compute_node.ComputeNode()
+        compute.update_from_virt_driver(resources, ignore=['memory_mb_used',
+                                                           'local_gb_used'])
+        expected = fake_compute_with_resources.obj_clone()
+        del expected.memory_mb_used
+        del expected.local_gb_used
+        self.assertTrue(base.obj_equal_prims(expected, compute))
+
     def test_update_from_virt_driver_missing_field(self):
         # NOTE(pmurray): update_from_virt_driver does not require
         # all fields to be present in resources. Validation of the

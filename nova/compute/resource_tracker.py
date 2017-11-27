@@ -433,7 +433,10 @@ class ResourceTracker(object):
         # to initialize
         if nodename in self.compute_nodes:
             cn = self.compute_nodes[nodename]
-            self._copy_resources(cn, resources)
+            self._copy_resources(cn, resources,
+                                 ignore=["vcpus_used",
+                                         "memory_mb_used",
+                                         "local_gb_used"])
             self._setup_pci_tracker(context, cn, resources)
             self.scheduler_client.update_resource_stats(cn)
             return
@@ -443,7 +446,10 @@ class ResourceTracker(object):
         cn = self._get_compute_node(context, nodename)
         if cn:
             self.compute_nodes[nodename] = cn
-            self._copy_resources(cn, resources)
+            self._copy_resources(cn, resources,
+                                 ignore=["vcpus_used",
+                                         "memory_mb_used",
+                                         "local_gb_used"])
             self._setup_pci_tracker(context, cn, resources)
             self.scheduler_client.update_resource_stats(cn)
             return
@@ -475,7 +481,7 @@ class ResourceTracker(object):
             dev_pools_obj = self.pci_tracker.stats.to_device_pools_obj()
             compute_node.pci_device_pools = dev_pools_obj
 
-    def _copy_resources(self, compute_node, resources):
+    def _copy_resources(self, compute_node, resources, ignore=None):
         """Copy resource values to supplied compute_node."""
         # purge old stats and init with anything passed in by the driver
         self.stats.clear()
@@ -488,7 +494,7 @@ class ResourceTracker(object):
         compute_node.disk_allocation_ratio = self.disk_allocation_ratio
 
         # now copy rest to compute_node
-        compute_node.update_from_virt_driver(resources)
+        compute_node.update_from_virt_driver(resources, ignore)
 
     def _get_host_metrics(self, context, nodename):
         """Get the metrics from monitors and

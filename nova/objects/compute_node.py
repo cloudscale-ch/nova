@@ -323,7 +323,7 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
     def destroy(self):
         db.compute_node_delete(self._context, self.id)
 
-    def update_from_virt_driver(self, resources):
+    def update_from_virt_driver(self, resources, ignore=None):
         # NOTE(pmurray): the virt driver provides a dict of values that
         # can be copied into the compute node. The names and representation
         # do not exactly match.
@@ -333,8 +333,10 @@ class ComputeNode(base.NovaPersistentObject, base.NovaObject):
                 "numa_topology", "hypervisor_type",
                 "hypervisor_version", "hypervisor_hostname",
                 "disk_available_least", "host_ip"]
+
+        ignore = ignore or []
         for key in keys:
-            if key in resources:
+            if key in resources and key not in ignore:
                 setattr(self, key, resources[key])
 
         # supported_instances has a different name in compute_node

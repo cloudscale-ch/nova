@@ -968,13 +968,18 @@ class TestInitComputeNode(BaseTestCase):
         compute_node = copy.deepcopy(_COMPUTE_NODE_FIXTURES[0])
         self.rt.compute_nodes[_NODENAME] = compute_node
 
-        self.rt._init_compute_node(mock.sentinel.ctx, resources)
+        with mock.patch.object(
+                compute_node, 'update_from_virt_driver',
+                wraps=compute_node.update_from_virt_driver) as upd_mock:
+            self.rt._init_compute_node(mock.sentinel.ctx, resources)
 
         self.assertFalse(service_mock.called)
         self.assertFalse(get_mock.called)
         self.assertFalse(create_mock.called)
         self.assertTrue(pci_mock.called)
-        self.assertTrue(self.sched_client_mock.update_resource_stats.called)
+        self.assertTrue(update_mock.called)
+        upd_mock.assert_called_once_with(resources, [
+            'vcpus_used', 'memory_mb_used', 'local_gb_used'])
 
     @mock.patch('nova.objects.PciDeviceList.get_by_compute_node',
                 return_value=objects.PciDeviceList())
@@ -984,19 +989,21 @@ class TestInitComputeNode(BaseTestCase):
                                  pci_mock):
         self._setup_rt()
 
-        def fake_get_node(_ctx, host, node):
-            res = copy.deepcopy(_COMPUTE_NODE_FIXTURES[0])
-            return res
-
-        get_mock.side_effect = fake_get_node
+        compute_node = copy.deepcopy(_COMPUTE_NODE_FIXTURES[0])
+        get_mock.return_value = compute_node
         resources = copy.deepcopy(_VIRT_DRIVER_AVAIL_RESOURCES)
 
-        self.rt._init_compute_node(mock.sentinel.ctx, resources)
+        with mock.patch.object(
+                compute_node, 'update_from_virt_driver',
+                wraps=compute_node.update_from_virt_driver) as upd_mock:
+            self.rt._init_compute_node(mock.sentinel.ctx, resources)
 
         get_mock.assert_called_once_with(mock.sentinel.ctx, _HOSTNAME,
                                          _NODENAME)
         self.assertFalse(create_mock.called)
-        self.assertTrue(self.sched_client_mock.update_resource_stats.called)
+        self.assertTrue(update_mock.called)
+        upd_mock.assert_called_once_with(resources, [
+            'vcpus_used', 'memory_mb_used', 'local_gb_used'])
 
     @mock.patch('nova.objects.PciDeviceList.get_by_compute_node',
                 return_value=objects.PciDeviceList(objects=[]))
