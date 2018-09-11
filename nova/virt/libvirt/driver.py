@@ -1194,9 +1194,10 @@ class LibvirtDriver(driver.ComputeDriver):
         vol_driver = self._get_volume_driver(connection_info)
         vol_driver.disconnect_volume(connection_info, disk_dev, instance)
 
-    def _extend_volume(self, connection_info, instance):
+    def _extend_volume(self, connection_info, instance, requested_size):
         vol_driver = self._get_volume_driver(connection_info)
-        return vol_driver.extend_volume(connection_info, instance)
+        return vol_driver.extend_volume(connection_info, instance,
+                                        requested_size)
 
     def _get_volume_config(self, connection_info, disk_info):
         vol_driver = self._get_volume_driver(connection_info)
@@ -1482,9 +1483,10 @@ class LibvirtDriver(driver.ComputeDriver):
 
         self._disconnect_volume(connection_info, disk_dev, instance)
 
-    def extend_volume(self, connection_info, instance):
+    def extend_volume(self, connection_info, instance, requested_size):
         try:
-            new_size = self._extend_volume(connection_info, instance)
+            new_size = self._extend_volume(connection_info, instance,
+                                           requested_size)
         except NotImplementedError:
             raise exception.ExtendVolumeNotSupported()
 
@@ -1495,7 +1497,13 @@ class LibvirtDriver(driver.ComputeDriver):
             state = guest.get_power_state(self._host)
             active_state = state in (power_state.RUNNING, power_state.PAUSED)
             if active_state:
-                disk_path = connection_info['data']['device_path']
+                if 'device_path' in connection_info['data']:
+                    disk_path = connection_info['data']['device_path']
+                else:
+                    disk = [d for d in guest.get_all_disks()
+                            if d.serial == connection_info['serial']][0]
+                    disk_path = disk.target_dev
+
                 LOG.debug('resizing block device %(dev)s to %(size)u kb',
                           {'dev': disk_path, 'size': new_size})
                 dev = guest.get_block_device(disk_path)

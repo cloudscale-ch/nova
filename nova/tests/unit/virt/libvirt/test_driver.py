@@ -7186,9 +7186,11 @@ class LibvirtConnTestCase(test.NoDBTestCase,
 
         for state in (power_state.RUNNING, power_state.PAUSED):
             guest.get_power_state = mock.Mock(return_value=state)
-            drvr.extend_volume(connection_info, instance)
+            drvr.extend_volume(connection_info,
+                               instance, new_size_in_kb * 1024)
             drvr._extend_volume.assert_called_with(connection_info,
-                                                   instance)
+                                                   instance,
+                                                   new_size_in_kb * 1024)
             guest.get_block_device.assert_called_with('/fake')
             block_device.resize.assert_called_with(20480)
 
@@ -7201,7 +7203,7 @@ class LibvirtConnTestCase(test.NoDBTestCase,
             connection_info = {'driver_volume_type': 'fake'}
             self.assertRaises(exception.ExtendVolumeNotSupported,
                               drvr.extend_volume,
-                              connection_info, instance)
+                              connection_info, instance, 0)
 
     def test_extend_volume_disk_not_found(self):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
@@ -7220,7 +7222,7 @@ class LibvirtConnTestCase(test.NoDBTestCase,
         drvr._host.get_guest = mock.Mock(return_value=guest)
         drvr._extend_volume = mock.Mock(return_value=new_size_in_kb)
 
-        drvr.extend_volume(connection_info, instance)
+        drvr.extend_volume(connection_info, instance, new_size_in_kb * 1024)
 
     def test_extend_volume_with_instance_not_found(self):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
@@ -7235,7 +7237,7 @@ class LibvirtConnTestCase(test.NoDBTestCase,
             connection_info = {'driver_volume_type': 'fake'}
             self.assertRaises(exception.InstanceNotFound,
                               drvr.extend_volume,
-                              connection_info, instance)
+                              connection_info, instance, 0)
 
     def test_extend_volume_with_libvirt_error(self):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
@@ -7260,7 +7262,7 @@ class LibvirtConnTestCase(test.NoDBTestCase,
 
         self.assertRaises(fakelibvirt.libvirtError,
                           drvr.extend_volume,
-                          connection_info, instance)
+                          connection_info, instance, new_size_in_kb * 1024)
 
     def test_multi_nic(self):
         network_info = _fake_network_info(self, 2)

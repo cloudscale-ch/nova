@@ -114,7 +114,7 @@ class LibvirtBaseVolumeDriver(object):
         """Disconnect the volume."""
         pass
 
-    def extend_volume(self, connection_info, instance):
+    def extend_volume(self, connection_info, instance, requested_size):
         """Extend the volume."""
         raise NotImplementedError()
 

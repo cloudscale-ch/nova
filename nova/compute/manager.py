@@ -7049,7 +7049,8 @@ class ComputeManager(manager.Manager):
 
         try:
             self.driver.extend_volume(connection_info,
-                                      instance)
+                                      instance,
+                                      bdm.volume_size * pow(1024, 3))
         except Exception as ex:
             LOG.warning('Extend volume failed, '
                         'volume_id=%(volume_id)s, reason: %(msg)s',
