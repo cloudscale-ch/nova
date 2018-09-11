@@ -365,3 +365,113 @@ class PowerVMDriver(driver.ComputeDriver):
         :returns: Boolean value. If True deallocate networks on reschedule.
         """
         return True
+
+    def attach_volume(self, context, connection_info, instance, mountpoint,
+                      disk_bus=None, device_type=None, encryption=None):
+        """Attach the volume to the instance using the connection_info.
+
+        :param context: security context
+        :param connection_info: Volume connection information from the block
+                                device mapping
+        :param instance: nova.objects.instance.Instance
+        :param mountpoint: Unused
+        :param disk_bus: Unused
+        :param device_type: Unused
+        :param encryption: Unused
+        """
+        self._log_operation('attach_volume', instance)
+
+        # Define the flow
+        flow = tf_lf.Flow("attach_volume")
+
+        # Build the driver
+        vol_drv = volume.build_volume_driver(self.adapter, instance,
+                                             connection_info)
+
+        # Add the volume attach to the flow.
+        flow.add(tf_stg.AttachVolume(vol_drv))
+
+        # Run the flow
+        tf_base.run(flow, instance=instance)
+
+        # The volume connector may have updated the system metadata.  Save
+        # the instance to persist the data.  Spawn/destroy auto saves instance,
+        # but the attach does not.  Detach does not need this save - as the
+        # detach flows do not (currently) modify system metadata.  May need
+        # to revise in the future as volume connectors evolve.
+        instance.save()
+
+    def detach_volume(self, context, connection_info, instance, mountpoint,
+                      encryption=None):
+        """Detach the volume attached to the instance.
+
+        :param context: security context
+        :param connection_info: Volume connection information from the block
+                                device mapping
+        :param instance: nova.objects.instance.Instance
+        :param mountpoint: Unused
+        :param encryption: Unused
+        """
+        self._log_operation('detach_volume', instance)
+
+        # Define the flow
+        flow = tf_lf.Flow("detach_volume")
+
+        # Get a volume adapter for this volume
+        vol_drv = volume.build_volume_driver(self.adapter, instance,
+                                             connection_info)
+
+        # Add a task to detach the volume
+        flow.add(tf_stg.DetachVolume(vol_drv))
+
+        # Run the flow
+        tf_base.run(flow, instance=instance)
+
+    def extend_volume(self, connection_info, instance, requested_size):
+        """Extend the disk attached to the instance.
+
+        :param dict connection_info: The connection for the extended volume.
+        :param nova.objects.instance.Instance instance:
+            The instance whose volume gets extended.
+        :param int requested_size: The requested new volume size in bytes.
+        :return: None
+        """
+
+        vol_drv = volume.build_volume_driver(
+            self.adapter, instance, connection_info)
+        vol_drv.extend_volume()
+
+    def _vol_drv_iter(self, context, instance, bdms, stg_ftsk=None):
+        """Yields a bdm and volume driver.
+
+        :param context: security context
+        :param instance: nova.objects.instance.Instance
+        :param bdms: block device mappings
+        :param stg_ftsk: storage FeedTask
+        """
+        # Get a volume driver for each volume
+        for bdm in bdms or []:
+            conn_info = bdm.get('connection_info')
+            vol_drv = volume.build_volume_driver(self.adapter, instance,
+                                                 conn_info, stg_ftsk=stg_ftsk)
+            yield bdm, vol_drv
+
+    def get_volume_connector(self, instance):
+        """Get connector information for the instance for attaching to volumes.
+
+        Connector information is a dictionary representing information about
+        the system that will be making the connection.
+
+        :param instance: nova.objects.instance.Instance
+        """
+        # Put the values in the connector
+        connector = {}
+        wwpn_list = fcvscsi.wwpns(self.adapter)
+
+        if wwpn_list is not None:
+            connector["wwpns"] = wwpn_list
+        connector["multipath"] = False
+        connector['host'] = CONF.host
+        connector['initiator'] = None
+
+        return connector

@@ -323,3 +323,93 @@ class TestPowerVMDriver(test.NoDBTestCase):
     def test_deallocate_networks_on_reschedule(self):
         candeallocate = self.drv.deallocate_networks_on_reschedule(mock.Mock())
         self.assertTrue(candeallocate)
+
+    @mock.patch('nova.virt.powervm.volume.fcvscsi.FCVscsiVolumeAdapter')
+    def test_attach_volume(self, mock_vscsi_adpt):
+        """Validates the basic PowerVM attach volume."""
+        # BDMs
+        mock_bdm = self._fake_bdms()['block_device_mapping'][0]
+
+        with mock.patch.object(self.inst, 'save') as mock_save:
+            # Invoke the method.
+            self.drv.attach_volume('context', mock_bdm.get('connection_info'),
+                                   self.inst, mock.sentinel.stg_ftsk)
+
+        # Verify the connect volume was invoked
+        mock_vscsi_adpt.return_value.attach_volume.assert_called_once_with()
+        mock_save.assert_called_once_with()
+
+    @mock.patch('nova.virt.powervm.volume.fcvscsi.FCVscsiVolumeAdapter')
+    def test_detach_volume(self, mock_vscsi_adpt):
+        """Validates the basic PowerVM detach volume."""
+        # BDMs
+        mock_bdm = self._fake_bdms()['block_device_mapping'][0]
+
+        # Invoke the method, good path test.
+        self.drv.detach_volume('context', mock_bdm.get('connection_info'),
+                               self.inst, mock.sentinel.stg_ftsk)
+        # Verify the disconnect volume was invoked
+        mock_vscsi_adpt.return_value.detach_volume.assert_called_once_with()
+
+    @mock.patch('nova.virt.powervm.volume.fcvscsi.FCVscsiVolumeAdapter')
+    def test_extend_volume(self, mock_vscsi_adpt):
+        mock_bdm = self._fake_bdms()['block_device_mapping'][0]
+        self.drv.extend_volume(mock_bdm.get('connection_info'), self.inst, 0)
+        mock_vscsi_adpt.return_value.extend_volume.assert_called_once_with()
+
+    def test_vol_drv_iter(self):
+        block_device_info = self._fake_bdms()
+        bdms = nova_driver.block_device_info_get_mapping(block_device_info)
+        vol_adpt = mock.Mock()
+
+        def _get_results(bdms):
+            # Patch so we get the same mock back each time.
+            with mock.patch('nova.virt.powervm.volume.fcvscsi.'
+                            'FCVscsiVolumeAdapter', return_value=vol_adpt):
+                return [
+                    (bdm, vol_drv) for bdm, vol_drv in self.drv._vol_drv_iter(
+                        'context', self.inst, bdms)]
+
+        results = _get_results(bdms)
+        self.assertEqual(
+            'fake_vol1',
+            results[0][0]['connection_info']['data']['volume_id'])
+        self.assertEqual(vol_adpt, results[0][1])
+        self.assertEqual(
+            'fake_vol2',
+            results[1][0]['connection_info']['data']['volume_id'])
+        self.assertEqual(vol_adpt, results[1][1])
+
+        # Test with empty bdms
+        self.assertEqual([], _get_results([]))
+
+    @staticmethod
+    def _fake_bdms():
+        def _fake_bdm(volume_id, target_lun):
+            connection_info = {'driver_volume_type': 'fibre_channel',
+                               'data': {'volume_id': volume_id,
+                                        'target_lun': target_lun,
+                                        'initiator_target_map':
+                                        {'21000024F5': ['50050768']}}}
+            mapping_dict = {'source_type': 'volume', 'volume_id': volume_id,
+                            'destination_type': 'volume',
+                            'connection_info':
+                            jsonutils.dumps(connection_info),
+                            }
+            bdm_dict = nova_block_device.BlockDeviceDict(mapping_dict)
+            bdm_obj = bdmobj.BlockDeviceMapping(**bdm_dict)
+
+            return nova_virt_bdm.DriverVolumeBlockDevice(bdm_obj)
+
+        bdm_list = [_fake_bdm('fake_vol1', 0), _fake_bdm('fake_vol2', 1)]
+        block_device_info = {'block_device_mapping': bdm_list}
+
+        return block_device_info
+
+    @mock.patch('nova.virt.powervm.volume.fcvscsi.wwpns', autospec=True)
+    def test_get_volume_connector(self, mock_wwpns):
+        vol_connector = self.drv.get_volume_connector(mock.Mock())
+        self.assertEqual(mock_wwpns.return_value, vol_connector['wwpns'])
+        self.assertFalse(vol_connector['multipath'])
+        self.assertEqual(vol_connector['host'], CONF.host)
+        self.assertIsNone(vol_connector['initiator'])

@@ -1319,9 +1319,10 @@ class LibvirtDriver(driver.ComputeDriver):
                      driver_block_device.get_volume_id(connection_info),
                      instance=instance)
 
-    def _extend_volume(self, connection_info, instance):
+    def _extend_volume(self, connection_info, instance, requested_size):
         vol_driver = self._get_volume_driver(connection_info)
-        return vol_driver.extend_volume(connection_info, instance)
+        return vol_driver.extend_volume(connection_info, instance,
+                                        requested_size)
 
     def _use_native_luks(self, encryption=None):
         """Is LUKS the required provider and native QEMU LUKS available
@@ -1685,9 +1686,10 @@ class LibvirtDriver(driver.ComputeDriver):
         self._disconnect_volume(context, connection_info, instance,
                                 encryption=encryption)
 
-    def extend_volume(self, connection_info, instance):
+    def extend_volume(self, connection_info, instance, requested_size):
         try:
-            new_size = self._extend_volume(connection_info, instance)
+            new_size = self._extend_volume(connection_info, instance,
+                                           requested_size)
         except NotImplementedError:
             raise exception.ExtendVolumeNotSupported()
 
@@ -1698,7 +1700,21 @@ class LibvirtDriver(driver.ComputeDriver):
             state = guest.get_power_state(self._host)
             active_state = state in (power_state.RUNNING, power_state.PAUSED)
             if active_state:
-                disk_path = connection_info['data']['device_path']
+                if 'device_path' in connection_info['data']:
+                    disk_path = connection_info['data']['device_path']
+                else:
+                    # Some drivers (eg. net) don't put the device_path
+                    # into the connection_info. Match disks by their serial
+                    # number instead
+                    serial = connection_info['serial']
+                    disk = next(iter([
+                        d for d in guest.get_all_disks()
+                        if d.serial == serial
+                    ]), None)
+                    if not disk:
+                        raise exception.VolumeNotFound(volume_id=serial)
+                    disk_path = disk.target_dev
+
                 LOG.debug('resizing block device %(dev)s to %(size)u kb',
                           {'dev': disk_path, 'size': new_size})
                 dev = guest.get_block_device(disk_path)
