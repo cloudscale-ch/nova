@@ -518,7 +518,7 @@ Related options:
     cfg.ListOpt(
         'cpu_model_extra_flags',
         item_type=types.String(
-            choices=['pcid', 'ssbd', 'virt-ssbd', 'amd-ssbd', 'amd-no-ssb'],
+            choices=['pcid', 'ssbd', 'virt-ssbd', 'amd-ssbd', 'amd-no-ssb', 'md-clear'],
             ignore_case=True,
         ),
         default=[],
