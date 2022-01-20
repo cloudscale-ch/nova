@@ -5246,6 +5246,95 @@ class LibvirtConnTestCase(test.NoDBTestCase,
             mock_support.assert_called_once_with()
             self.assertEqual(cfg.os_loader_type, "pflash")
 
+    @test.patch_exists(CONF.libvirt.rng_dev_path, True)
+    def _test_get_guest_config_with_uefi_machine_loader(self, machine):
+        self._stub_host_capabilities_cpu_arch(fields.Architecture.X86_64)
+
+        libvirt_driver.uefi_logged = True
+
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
+        image_meta = objects.ImageMeta.from_dict({
+            "disk_format": "raw",
+            "properties": {
+                "hw_firmware_type": "uefi",
+                "hw_machine_type": machine,
+            }
+        })
+        instance_ref = objects.Instance(**self.test_instance)
+
+        disk_info = blockinfo.get_disk_info(CONF.libvirt.virt_type,
+                                            instance_ref,
+                                            image_meta)
+        cfg = drvr._get_guest_config(instance_ref, [],
+                                     image_meta, disk_info)
+        return cfg
+
+    # For UEFI on x86_64, if both OVMF loaders are available, pc takes regular
+    # and q35 takes secboot; if only either one is available, pc/q35 take it.
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', True)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', True)
+    def test_get_guest_config_with_uefi_pc_both_loaders(self, mock_exist,
+                                                        mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('pc')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.fd')
+        mock_warning.assert_not_called()
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', True)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', False)
+    def test_get_guest_config_with_uefi_pc_only_regular(self, mock_exist,
+                                                        mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('pc')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.fd')
+        mock_warning.assert_not_called()
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', True)
+    def test_get_guest_config_with_uefi_pc_only_secboot(self, mock_exist,
+                                                        mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('pc')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.secboot.fd')
+        msg = ("uefi firmware OVMF_CODE.secboot.fd "
+               "may not boot on machine type pc, try "
+               "q35. no other firmware is available.")
+        mock_warning.assert_called_once_with(msg)
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', True)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', True)
+    def test_get_guest_config_with_uefi_q35_both_loaders(self, mock_exist,
+                                                         mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('q35')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.secboot.fd')
+        mock_warning.assert_not_called()
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', True)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', False)
+    def test_get_guest_config_with_uefi_q35_only_regular(self, mock_exist,
+                                                         mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('q35')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.fd')
+        mock_warning.assert_not_called()
+
+    @mock.patch.object(libvirt_driver.LOG, 'warning')
+    @mock.patch('nova.virt.libvirt.driver.os.path.exists', return_value=False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.fd', False)
+    @test.patch_exists('/usr/share/OVMF/OVMF_CODE.secboot.fd', True)
+    def test_get_guest_config_with_uefi_q35_only_secboot(self, mock_exist,
+                                                         mock_warning):
+        cfg = self._test_get_guest_config_with_uefi_machine_loader('q35')
+        self.assertEqual(cfg.os_loader, '/usr/share/OVMF/OVMF_CODE.secboot.fd')
+        mock_warning.assert_not_called()
+
     @mock.patch('os.path.exists', return_value=True)
     def test_check_uefi_support_aarch64(self, mock_exist):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
