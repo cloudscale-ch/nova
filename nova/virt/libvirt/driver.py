@@ -5693,9 +5693,31 @@ class LibvirtDriver(driver.ComputeDriver):
                                     "functional testing and therefore "
                                     "considered experimental.")
                         uefi_logged = True
+
+                    # If OVMF_CODE.secboot.fd is built with SB and SMM features
+                    # (usual; SMM ensures SB security), q35 is required by SMM.
+                    # The guest doesn't even boot on pc, or on q35 without SMM!
+                    #
+                    # On non-q35 (pc), skip .secboot.fd _if_ not the only file.
+                    # And on q35, SMM should be enabled (as we don't disable it
+                    # QEMU auto-enables it if KVM supports it), so leave as-is.
+
+                    lpath_not_secboot = None
                     for lpath in DEFAULT_UEFI_LOADER_PATH[caps.host.cpu.arch]:
                         if os.path.exists(lpath):
                             guest.os_loader = lpath
+                            if lpath != '/usr/share/OVMF/OVMF_CODE.secboot.fd':
+                                lpath_not_secboot = lpath
+                    mach_type = libvirt_utils.get_machine_type(image_meta)
+                    if (caps.host.cpu.arch == 'x86_64' and
+                            mach_type is not None and 'q35' not in mach_type):
+                        if lpath_not_secboot is not None:
+                            guest.os_loader = lpath_not_secboot
+                        else:
+                            LOG.warning("uefi firmware OVMF_CODE.secboot.fd "
+                                        "may not boot on machine type pc, try "
+                                        "q35. no other firmware is available.")
+
                     guest.os_loader_type = "pflash"
                 else:
                     raise exception.UEFINotSupported()
