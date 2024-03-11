@@ -5369,6 +5369,7 @@ class TestAPI(TestAPIBase):
             'tenant_id': uuids.project_id,
             'network_id': uuids.networkid_1,
             'mac_address': 'fake-mac',
+            'port_security_enabled': False,
             constants.RESOURCE_REQUEST: 'fake-request'
         }
         mock_show_port.return_value = port
@@ -7051,11 +7052,12 @@ class TestAllocateForInstance(test.NoDBTestCase):
         api = neutronapi.API()
         ordered_networks = [objects.NetworkRequest(network_id=uuids.net)]
         nets = {uuids.net: {"id": uuids.net, "port_security_enabled": False}}
+        ports = {}
         mock_client = mock.Mock()
         mock_client.create_port.return_value = {"port": {"id": uuids.port}}
 
         result = api._create_ports_for_instance(self.context, self.instance,
-            ordered_networks, nets, mock_client, None)
+            ordered_networks, nets, ports, mock_client, None)
 
         self.assertEqual([(ordered_networks[0], uuids.port)], result)
         mock_client.create_port.assert_called_once_with(
@@ -7067,12 +7069,13 @@ class TestAllocateForInstance(test.NoDBTestCase):
         api = neutronapi.API()
         ordered_networks = [objects.NetworkRequest(network_id=uuids.net)]
         nets = {uuids.net: {"id": uuids.net, "subnets": [uuids.subnet]}}
+        ports = {}
         mock_client = mock.Mock()
         mock_client.create_port.return_value = {"port": {"id": uuids.port}}
         security_groups = [uuids.sg]
 
         result = api._create_ports_for_instance(self.context, self.instance,
-            ordered_networks, nets, mock_client, security_groups)
+            ordered_networks, nets, ports, mock_client, security_groups)
 
         self.assertEqual([(ordered_networks[0], uuids.port)], result)
         mock_client.create_port.assert_called_once_with(
@@ -7095,6 +7098,7 @@ class TestAllocateForInstance(test.NoDBTestCase):
             uuids.net3: {"id": uuids.net3, "port_security_enabled": False},
             uuids.net4: {"id": uuids.net4, "port_security_enabled": False}
         }
+        ports = {}
         error = exception.PortLimitExceeded()
         mock_client = mock.Mock()
         mock_client.create_port.side_effect = [
@@ -7105,7 +7109,7 @@ class TestAllocateForInstance(test.NoDBTestCase):
 
         self.assertRaises(exception.PortLimitExceeded,
             api._create_ports_for_instance,
-            self.context, self.instance, ordered_networks, nets,
+            self.context, self.instance, ordered_networks, nets, ports,
             mock_client, None)
 
         self.assertEqual([mock.call(uuids.port1), mock.call(uuids.port2)],
@@ -7124,6 +7128,7 @@ class TestAllocateForInstance(test.NoDBTestCase):
             uuids.net2: {"id": uuids.net2, "port_security_enabled": False},
             uuids.net3: {"id": uuids.net3, "port_security_enabled": True}
         }
+        ports = {}
         mock_client = mock.Mock()
         mock_client.create_port.side_effect = [
             {"port": {"id": uuids.port1}},
@@ -7132,7 +7137,7 @@ class TestAllocateForInstance(test.NoDBTestCase):
 
         self.assertRaises(exception.SecurityGroupCannotBeApplied,
             api._create_ports_for_instance,
-            self.context, self.instance, ordered_networks, nets,
+            self.context, self.instance, ordered_networks, nets, ports,
             mock_client, None)
 
         self.assertEqual([mock.call(uuids.port1), mock.call(uuids.port2)],
@@ -7143,12 +7148,13 @@ class TestAllocateForInstance(test.NoDBTestCase):
         api = neutronapi.API()
         ordered_networks = [objects.NetworkRequest(network_id=uuids.net)]
         nets = {uuids.net: {"id": uuids.net, "port_security_enabled": True}}
+        ports = {}
         mock_client = mock.Mock()
 
         self.assertRaises(exception.SecurityGroupCannotBeApplied,
             api._create_ports_for_instance,
             self.context, self.instance,
-            ordered_networks, nets, mock_client, None)
+            ordered_networks, nets, ports, mock_client, None)
 
         self.assertFalse(mock_client.create_port.called)
 
@@ -7158,12 +7164,71 @@ class TestAllocateForInstance(test.NoDBTestCase):
         nets = {uuids.net: {
             "id": uuids.net,
             "port_security_enabled": False}}
+        ports = {}
         mock_client = mock.Mock()
 
         self.assertRaises(exception.SecurityGroupCannotBeApplied,
             api._create_ports_for_instance,
             self.context, self.instance,
-            ordered_networks, nets, mock_client, [uuids.sg])
+            ordered_networks, nets, ports, mock_client, [uuids.sg])
+
+        self.assertFalse(mock_client.create_port.called)
+
+        ports = {}
+        mock_client = mock.Mock()
+
+        self.assertRaises(exception.SecurityGroupCannotBeApplied,
+            api._create_ports_for_instance,
+            self.context, self.instance,
+            ordered_networks, nets, ports, mock_client, [uuids.sg])
+
+        self.assertFalse(mock_client.create_port.called)
+
+    def test_create_ports_for_instance_existing_port_security(self):
+        """Test that for an existing port the port security setting on the port
+        is checked and not the setting on the network. This tests the case
+        where port security is disabled on the network but enabled on the port.
+        """
+        api = neutronapi.API()
+        ordered_networks = [objects.NetworkRequest(port_id=uuids.port1,
+                                                   network_id=uuids.net)]
+        nets = {uuids.net: {
+            "id": uuids.net,
+            "port_security_enabled": False}}
+        ports = {uuids.port1: {
+            "id": uuids.port1,
+            "network_id": uuids.net,
+            "port_security_enabled": True}}
+        mock_client = mock.Mock()
+
+        self.assertRaises(exception.SecurityGroupCannotBeApplied,
+            api._create_ports_for_instance,
+            self.context, self.instance,
+            ordered_networks, nets, ports, mock_client, [uuids.sg])
+
+        self.assertFalse(mock_client.create_port.called)
+
+    def test_create_ports_for_instance_existing_port_no_security(self):
+        """Test that for an existing port the port security setting on the port
+        is checked and not the setting on the network. This tests the case
+        where port security is enabled on the network but disabled on the port.
+        """
+        api = neutronapi.API()
+        ordered_networks = [objects.NetworkRequest(port_id=uuids.port1,
+                                                   network_id=uuids.net)]
+        nets = {uuids.net: {
+            "id": uuids.net,
+            "port_security_enabled": True}}
+        ports = {uuids.port1: {
+            "id": uuids.port1,
+            "network_id": uuids.net,
+            "port_security_enabled": False}}
+        mock_client = mock.Mock()
+
+        api._create_ports_for_instance(
+            self.context, self.instance, ordered_networks, nets, ports,
+            mock_client, []
+        )
 
         self.assertFalse(mock_client.create_port.called)
 

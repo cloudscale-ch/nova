@@ -950,13 +950,14 @@ class API(base.Base):
         return {net['id']: net for net in nets}
 
     def _create_ports_for_instance(self, context, instance, ordered_networks,
-            nets, neutron, security_group_ids):
+                                   nets, ports, neutron, security_group_ids):
         """Create port for network_requests that don't have a port_id
 
         :param context: The request context.
         :param instance: nova.objects.instance.Instance object.
         :param ordered_networks: objects.NetworkRequestList in requested order
         :param nets: a dict of network_id to networks returned from neutron
+        :param ports: a dict of port_id to ports returned from neutron
         :param neutron: neutronclient built from users request context
         :param security_group_ids: a list of security group IDs to be applied
             to any ports created
@@ -968,22 +969,26 @@ class API(base.Base):
         requests_and_created_ports = []
         for request in ordered_networks:
             network = nets.get(request.network_id)
+            port = ports.get(request.port_id)
             # if network_id did not pass validate_networks() and not available
             # here then skip it safely not continuing with a None Network
             if not network:
                 continue
 
             try:
-                port_security_enabled = network.get(
-                    'port_security_enabled', True)
+                port_security_enabled = (
+                    port.get('port_security_enabled', True) if port else
+                    network.get('port_security_enabled', True)
+                )
+
                 if port_security_enabled:
                     if not network.get('subnets'):
                         # Neutron can't apply security groups to a port
                         # for a network without L3 assignments.
                         LOG.debug('Network with port security enabled does '
                                   'not have subnets so security groups '
-                                  'cannot be applied: %s',
-                                  network, instance=instance)
+                                  'cannot be applied: %s %s',
+                                  network, port, instance=instance)
                         raise exception.SecurityGroupCannotBeApplied()
                 else:
                     if security_group_ids:
@@ -1105,8 +1110,8 @@ class API(base.Base):
         # updated later in _update_ports_for_instance to be bound to the
         # instance and compute host.
         requests_and_created_ports = self._create_ports_for_instance(
-            context, instance, ordered_networks, nets, neutron,
-            security_group_ids)
+            context, instance, ordered_networks, nets, requested_ports_dict,
+            neutron, security_group_ids)
 
         #
         # Update existing and newly created ports
