@@ -921,6 +921,13 @@ Related options:
 * [workarounds]/ensure_libvirt_rbd_instance_dir_cleanup
 * compute.force_raw_images
 """),
+    cfg.BoolOpt('remote_copy_compression',
+                default=False,
+                help="""
+Use SSH compression to copy ephemeral disks to a remote host. On fast
+local networks compression often reduces the copy bandwidth because the CPU
+cannot compress fast enough.
+"""),
     cfg.StrOpt('images_volume_group',
                help="""
 LVM Volume Group that is used for VM images, when you specify images_type=lvm

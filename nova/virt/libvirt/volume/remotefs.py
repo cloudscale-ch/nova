@@ -99,7 +99,7 @@ class RemoteFilesystem(object):
                                on_completion=on_completion)
 
     def copy_file(self, src, dst, on_execute=None,
-                    on_completion=None, compression=True):
+                    on_completion=None, compression=False):
         LOG.debug("Copying file %s to %s", src, dst)
         self.driver.copy_file(src, dst, on_execute=on_execute,
                               on_completion=on_completion,
