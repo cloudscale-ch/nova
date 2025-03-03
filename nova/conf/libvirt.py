@@ -921,6 +921,18 @@ Related options:
 * [workarounds]/ensure_libvirt_rbd_instance_dir_cleanup
 * compute.force_raw_images
 """),
+    cfg.ListOpt('remote_copy_compression_types',
+                item_type=types.String(),
+                default=['raw', 'flat', 'lvm', 'rbd', 'ploop'],
+                help="""
+VM image types which should be compressed when copied to a remote host. On fast
+local networks compression often reduces the copy bandwidth because the CPU
+cannot compress fast enough.
+
+Related options:
+
+* images_type
+"""),
     cfg.StrOpt('images_volume_group',
                help="""
 LVM Volume Group that is used for VM images, when you specify images_type=lvm
