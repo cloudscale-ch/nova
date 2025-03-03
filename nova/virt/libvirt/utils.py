@@ -310,7 +310,7 @@ def copy_image(
     receive: bool = False,
     on_execute: ty.Optional[ty.Callable] = None,
     on_completion: ty.Optional[ty.Callable] = None,
-    compression: bool = True,
+    compression: bool = False,
 ) -> None:
     """Copy a disk image to an existing directory
 

@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    A new configuration option [libvirt]/remote_copy_compression has been
+    added. This option replaces the static list of disk formats which use
+    SSH compression for remote copy operations.
+
+    On fast local networks compression often reduces the copy bandwidth because
+    the CPU cannot compress fast enough.
+
+    By default compression is disabled. In previous releases compression was
+    for the raw, flat, lvm and ploop disks types.

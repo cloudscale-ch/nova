@@ -23101,13 +23101,14 @@ class LibvirtDriverTestCase(test.NoDBTestCase, TraitsComparisonMixin):
             self, ctxt, flavor_obj, mock_execute, mock_exists, mock_rename,
             mock_is_shared, mock_get_host_ip, mock_destroy,
             mock_get_disk_info, mock_vtpm, mock_unplug_vifs,
-            mock_cleanup, block_device_info=None, params_for_instance=None):
+            mock_cleanup, block_device_info=None, params_for_instance=None,
+            images_type='qcow2', assert_compression=False):
         """Test for nova.virt.libvirt.driver.LivirtConnection
         .migrate_disk_and_power_off.
         """
 
         instance = self._create_instance(params=params_for_instance)
-        disk_info = list(fake_disk_info_byname(instance).values())
+        disk_info = list(fake_disk_info_byname(instance, images_type).values())
         disk_info_text = jsonutils.dumps(disk_info)
         mock_get_disk_info.return_value = disk_info
 
@@ -23134,10 +23135,25 @@ class LibvirtDriverTestCase(test.NoDBTestCase, TraitsComparisonMixin):
             instance.uuid, mock.ANY, mock.ANY, '10.0.0.1', mock.ANY, mock.ANY)
         mock_unplug_vifs.assert_called_once()
 
+        assert_func = (
+            self.assertIn if assert_compression
+            else self.assertNotIn
+        )
+        for i, info in enumerate(disk_info):
+            self.assertIn('scp', mock_execute.call_args_list[i + 1].args)
+            assert_func('-C', mock_execute.call_args_list[i + 1].args)
+
     def test_migrate_disk_and_power_off(self):
         flavor = {'root_gb': 10, 'ephemeral_gb': 20}
         flavor_obj = objects.Flavor(**flavor)
         self._test_migrate_disk_and_power_off(self.context, flavor_obj)
+
+    def test_migrate_disk_and_power_off_compressed(self):
+        CONF.set_override('remote_copy_compression', True, group='libvirt')
+        flavor = {'root_gb': 10, 'ephemeral_gb': 20}
+        flavor_obj = objects.Flavor(**flavor)
+        self._test_migrate_disk_and_power_off(self.context, flavor_obj,
+                                              assert_compression=True)
 
     @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._disconnect_volume')
     def test_migrate_disk_and_power_off_boot_from_volume(self,
