@@ -416,6 +416,10 @@ def _update_vif_xml(xml_doc, migrate_data, get_vif_config):
         # can't change during live migration.
         address = interface_dev.find('address')
         mtu = interface_dev.find('mtu')
+        # We always use the driver already found on the VM, as any changes to
+        # it have a high chance of causing libvirt to fail, due to mismatching
+        # virtio options.
+        driver = interface_dev.find('driver')
         # Now clear the interface's current elements and insert everything
         # from the destination vif config xml.
         interface_dev.clear()
@@ -428,7 +432,14 @@ def _update_vif_xml(xml_doc, migrate_data, get_vif_config):
             #               the live migration will crash.
             if dest_interface_subelem.tag == 'mtu' and mtu is None:
                 continue
+            # Never use the driver from the newly created XML
+            if dest_interface_subelem.tag == 'driver':
+                continue
             interface_dev.insert(index, dest_interface_subelem)
+        # Re-insert the driver.
+        if driver is not None:
+            interface_dev.insert(index + 1, driver)
+            index += 1
         # And finally re-insert the hw address.
         interface_dev.insert(index + 1, address)
 
