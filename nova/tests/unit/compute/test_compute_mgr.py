@@ -13164,3 +13164,577 @@ class ComputeManagerSetHostEnabledTestCase(test.NoDBTestCase):
         self.assertIn('An error occurred while updating '
                       'COMPUTE_STATUS_DISABLED trait',
                       m_exc.call_args_list[0][0][0])
+
+
+@mock.patch('nova.objects.BlockDeviceMappingList.get_by_instance_uuid')
+@mock.patch.object(objects.BlockDeviceMapping, 'create', autospec=True)
+@mock.patch.object(objects.BlockDeviceMapping, 'destroy', autospec=True)
+@mock.patch.object(objects.BlockDeviceMapping, 'save', autospec=True)
+class ComputeManagerBDMResizeTestCase(test.NoDBTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.flags(compute_driver='fake.SameHostColdMigrateDriver')
+        self.compute = manager.ComputeManager()
+        self.context = context.RequestContext(
+            fakes.FAKE_USER_ID,
+            fakes.FAKE_PROJECT_ID,
+        )
+
+    def _create_migration_instance(
+            self,
+            old_flavor_ephemeral=0,
+            old_flavor_swap=0,
+            new_flavor_ephemeral=0,
+            new_flavor_swap=0,
+            instance_ephemerals=None,
+            instance_swap=None,
+    ):
+        old_flavor = fake_flavor.fake_flavor_obj(
+            self.context,
+            name='old-flavor',
+            id=1,
+            flavorid='1',
+            ephemeral_gb=old_flavor_ephemeral,
+            swap=old_flavor_swap,
+        )
+
+        new_flavor = fake_flavor.fake_flavor_obj(
+            self.context,
+            name='new-flavor',
+            id=2,
+            flavorid='2',
+            ephemeral_gb=new_flavor_ephemeral,
+            swap=new_flavor_swap,
+        )
+
+        instance = fake_instance.fake_instance_obj(
+            self.context,
+            flavor=old_flavor,
+            vm_state=vm_states.ACTIVE,
+            expected_attrs=['metadata', 'system_metadata', 'info_cache'],
+        )
+
+        # This would be set in _finish_resize
+        instance.old_flavor = instance.flavor
+        # This would be set in _prep_resize
+        instance.new_flavor = new_flavor
+
+        # Root disk
+        bdm_objects = [
+            fake_block_device.fake_bdm_object(
+                self.context,
+                dict(source_type='image',
+                     destination_type='local',
+                     boot_index=0,
+                     image_id=uuids.image_id,
+                     device_name='/dev/vda',
+                     volume_size=1))
+        ]
+
+        # Ephemeral disks
+        if instance_ephemerals:
+            for i, size in enumerate(instance_ephemerals):
+                bdm_objects.append(
+                    fake_block_device.fake_bdm_object(
+                        self.context,
+                        dict(source_type='blank',
+                             destination_type='local',
+                             device_type='disk',
+                             boot_index=-1,
+                             # Ephemeral disks start at /dev/vdb
+                             device_name=f'/dev/vd{chr(ord("b") + i)}',
+                             volume_size=size)
+                    )
+                )
+
+        # Swap disks
+        if instance_swap:
+            bdm_objects.append(
+                fake_block_device.fake_bdm_object(
+                    self.context,
+                    dict(source_type='blank',
+                         destination_type='local',
+                         device_type='disk',
+                         guest_format='swap',
+                         boot_index=-1,
+                         volume_size=instance_swap),
+                )
+            )
+
+        bdm_list = objects.BlockDeviceMappingList(objects=bdm_objects)
+
+        return instance, bdm_list
+
+    def _setup_mocks(self, mock_bdm_get, mock_create, mock_destroy, bdm_list):
+
+        def create(_self):
+
+            # Set UUID and ID
+            _self.uuid = uuids.bdm
+            _self.id = 1
+
+            # Fill in any unset fields with default values
+            for field in _self.fields:
+                if field not in _self._changed_fields:
+                    if _self.fields[field].nullable:
+                        value = None
+                    else:
+                        value = _self.fields[field].default
+
+                    setattr(_self, field, value)
+
+            bdm_list.objects.append(_self)
+
+        def destroy(_self):
+            bdm_list.objects.remove(_self)
+
+        mock_create.side_effect = create
+        mock_destroy.side_effect = destroy
+        mock_bdm_get.return_value = bdm_list
+
+    def test_resize_ephemeral_bdms_single_full(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing a single ephemeral disk using the full allocation of
+        the flavor. The disk should be resized to the ephemeral size of the
+        new flavor.
+        """
+
+        instance, bdms = self._create_migration_instance(
+            old_flavor_ephemeral=1,
+            new_flavor_ephemeral=2,
+            instance_ephemerals=[1],
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 2)
+        self.assertEqual(old_sizes, (1, None))
+        mock_save.assert_called_once()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_called_once()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_single_ephemeral_smaller(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing a single ephemeral disk not using the full allocation
+        of the flavor. The disk should not be resized.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_ephemeral=2,
+            new_flavor_ephemeral=3,
+            instance_ephemerals=[1],
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 1)
+        self.assertEqual(old_sizes, (None, None))
+        mock_save.assert_not_called()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_not_called()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_multiple_ephemerals(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing with multiple ephemeral disks. This should not change
+        the ephemeral disk sizes.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_ephemeral=3,
+            new_flavor_ephemeral=4,
+            instance_ephemerals=[2, 1],
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 2)
+        self.assertEqual(bdms[2].volume_size, 1)
+        self.assertEqual(old_sizes, (None, None))
+        mock_save.assert_not_called()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_not_called()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 2)
+        self.assertEqual(bdms[2].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_to_single_ephemeral(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing an instance without an ephemeral disk to a flavor
+        with ephemeral storage. This should add an ephemeral disk.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_ephemeral=0,
+            new_flavor_ephemeral=1,
+            instance_ephemerals=[],
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        mock_create.assert_called_once()
+        mock_save.assert_called_once()  # after assigning device name
+        mock_destroy.assert_not_called()
+        self.assertEqual(old_sizes, (0, None))
+        self.assertEqual(len(bdms), 2)
+        self.assertEqual(bdms[1].volume_size, 1)
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_not_called()
+        mock_create.assert_not_called()
+        mock_destroy.assert_called_once()
+        self.assertEqual(len(bdms), 1)
+
+    def test_resize_ephemeral_bdms_swap_full_larger(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing to a flavor with more swap space if all swap space
+        allowed by the current flavor is used. Swap will be resized.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=1,
+            new_flavor_swap=2,
+            instance_swap=1,
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 2)
+        self.assertEqual(old_sizes, (None, 1))
+        mock_save.assert_called_once()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_called_once()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_swap_full_smaller(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing to a flavor with less swap space if all swap space
+        allowed by the current flavor is used. Swap will always be resized.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=2,
+            new_flavor_swap=1,
+            instance_swap=2,
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 1)
+        self.assertEqual(old_sizes, (None, 2))
+        mock_save.assert_called_once()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_called_once()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 2)
+
+    def test_resize_ephemeral_bdms_swap_unused(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing to a flavor with more swap space if not all swap
+        space allowed by the old flavor is used. Swap will not be resized.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=2,
+            new_flavor_swap=3,
+            instance_swap=1,
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 1)
+        self.assertEqual(old_sizes, (None, None))
+        mock_save.assert_not_called()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_not_called()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_swap_too_large(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing to a flavor with less swap space than allowed by the
+        new flavor for an instance that does not use all swap space allowed
+        by the old flavor. Swap will be sized down to the new flavor.
+        """
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=3,
+            new_flavor_swap=1,
+            instance_swap=2,
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        self.assertEqual(bdms[1].volume_size, 1)
+        self.assertEqual(old_sizes, (None, 2))
+        mock_save.assert_called_once()
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_called_once()
+        mock_create.assert_not_called()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 2)
+
+    def test_resize_ephemeral_bdms_to_noswap(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing from a flavor with swap space to one without swap."""
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=1,
+            new_flavor_swap=0,
+            instance_swap=1,
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        mock_destroy.assert_called_once()
+        mock_save.assert_not_called()
+        self.assertEqual(old_sizes, (None, 1))
+        self.assertEqual(len(bdms), 1)
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_called_once()  # after assigning device name
+        mock_create.assert_called_once()
+        mock_destroy.assert_not_called()
+        self.assertEqual(bdms[1].volume_size, 1)
+
+    def test_resize_ephemeral_bdms_to_swap(
+            self,
+            mock_save,
+            mock_destroy,
+            mock_create,
+            mock_bdm_get
+    ):
+        """Test resizing from a flavor without swap space to one with swap."""
+        instance, bdms = self._create_migration_instance(
+            old_flavor_swap=0,
+            new_flavor_swap=1
+        )
+
+        self._setup_mocks(mock_bdm_get, mock_create, mock_destroy, bdms)
+
+        old_sizes = self.compute._resize_ephemeral_bdms(
+            self.context,
+            instance,
+            bdms,
+        )
+
+        mock_create.assert_called_once()
+        mock_save.assert_called_once()  # after assigning device name
+        self.assertEqual(old_sizes, (None, 0))
+        self.assertEqual(len(bdms), 2)
+        self.assertEqual(bdms[1].volume_size, 1)
+
+        # Test reverting
+        mock_save.reset_mock()
+        mock_create.reset_mock()
+        mock_destroy.reset_mock()
+
+        self.compute._revert_resize_ephemeral_bdms(
+            self.context,
+            instance,
+            old_sizes,
+        )
+
+        mock_save.assert_not_called()
+        mock_create.assert_not_called()
+        mock_destroy.assert_called_once()
+        self.assertEqual(len(bdms), 1)

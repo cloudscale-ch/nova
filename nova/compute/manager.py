@@ -4846,6 +4846,7 @@ class ComputeManager(manager.Manager):
         instance.old_flavor = None
         instance.new_flavor = None
         instance.system_metadata.pop('old_vm_state', None)
+        instance.system_metadata.pop('old_disk_sizes', None)
         instance.save()
 
     @wrap_exception()
@@ -5340,6 +5341,13 @@ class ComputeManager(manager.Manager):
             # compatibility if old_vm_state is not set
             old_vm_state = instance.system_metadata.get(
                 'old_vm_state', vm_states.ACTIVE)
+            old_sizes = instance.system_metadata.get('old_disk_sizes')
+            if old_sizes:
+                self._revert_resize_ephemeral_bdms(context, instance,
+                                                   jsonutils.loads(old_sizes))
+                # Refresh bdms
+                bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+                    context, instance.uuid)
 
             # Revert the flavor and host/node fields to their previous values
             self._revert_instance_flavor_host_node(instance, migration)
@@ -6120,6 +6128,176 @@ class ComputeManager(manager.Manager):
                     self.volume_api.attachment_complete(
                         context, bdm.attachment_id)
 
+    def _update_ephemeral_bdms(self, context, instance, block_device_info,
+                               ephemeral_size, swap_size):
+        """Update ephemeral bdm objects in DB (for instance resizing).
+
+        Updates volume size of block device mapping object according to
+        specified new size. Works only for a single ephemeral and swap disks.
+        Stores the result into the DB.
+
+        Creates a new bdm if necessary.
+
+        :param context: Request context object.
+        :param instance: An instance which bdms are to be updated.
+        :param block_device_info: Instance block device mapping in driver
+                                  format.
+        :param ephemeral_size: New size in GB of the single ephemeral disk.
+                               Creates a new bdm if no bdm exists.
+                               If None - does nothing with ephemerals.
+                               If 0 - removes the ephemeral disk
+        :param swap_size: A size in MB of swap disk. Creates a new bdm if no
+                          swap bdm exists and non zero size is specified.
+                          Destroys swap bdm if zero size is specified.
+                          If None - does nothing with swap.
+        """
+        ephemerals = driver.block_device_info_get_ephemerals(block_device_info)
+        swap = driver.block_device_info_get_swap(block_device_info)
+        reassing_device_names = False
+
+        # Resize ephemeral disk
+        if ephemeral_size is not None:
+            if not ephemerals and ephemeral_size > 0:
+                LOG.debug(
+                    f'Creating ephemeral bdm: size={ephemeral_size}.',
+                    instance=instance
+                )
+                bdm = objects.BlockDeviceMapping(
+                    context=context, instance_uuid=instance.uuid,
+                    source_type='blank', destination_type='local',
+                    device_type='disk', delete_on_termination=True,
+                    boot_index=-1, volume_size=ephemeral_size)
+                bdm.create()
+                reassing_device_names = True
+            elif len(ephemerals) == 1 and ephemeral_size == 0:
+                LOG.debug('Deleting ephemeral bdm.', instance=instance)
+                ephemerals[0].destroy()
+                reassing_device_names = True
+            elif len(ephemerals) == 1:
+                LOG.debug(
+                    f'Resizing ephemeral bdm: new_size={ephemeral_size}, '
+                    f'old_size={ephemerals[0].volume_size}.',
+                    instance=instance,
+                )
+                ephemerals[0].volume_size = ephemeral_size
+                ephemerals[0].save()
+
+        # Resize swap
+        if swap_size is not None:
+            if swap['swap_size'] == 0 and swap_size > 0:
+                LOG.debug(
+                    f'Creating swap bdm: size={swap_size}.',
+                    instance=instance,
+                )
+                bdm = objects.BlockDeviceMapping(
+                    context=context, instance_uuid=instance.uuid,
+                    source_type='blank', destination_type='local',
+                    device_type='disk', guest_format='swap',
+                    boot_index=-1, volume_size=swap_size)
+                bdm.create()
+                reassing_device_names = True
+            elif swap['swap_size'] > 0 and swap_size == 0:
+                LOG.debug('Deleting swap bdm.', instance=instance)
+                swap.destroy()
+                reassing_device_names = True
+            elif swap['swap_size'] != swap_size:
+                LOG.debug(
+                    f'Resizing swap bdm: old_size={swap.volume_size} '
+                    f'new_size={swap_size}',
+                    instance=instance,
+                )
+                swap.volume_size = swap_size
+                swap.save()
+
+        if reassing_device_names:
+            bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+                    context, instance.uuid)
+            self._default_block_device_names(instance, None, bdms)
+
+    def _resize_ephemeral_bdms(self, context, instance, bdms):
+        """Resize ephemeral bdm objects in DB (for instance resizing).
+
+        For an instance in resizing state (having actual old and new flavor
+        fields) this method resizes the instance's ephemeral and swap bdms
+        objects, persists them into DB, preparing them to be used by virt
+        driver to create/resize disks.
+
+        Supported features:
+        - add/remove/resize swap disk;
+        - add/increase single ephemeral disk;
+        - keep custom user specified ephemeral/swap size if it differs from
+            flavor specified size.
+
+        :param context: Request context object.
+        :param instance: An instance which bdms are to be resized.
+        :returns: A serializable object contains original bdm sizes.
+        """
+
+        block_device_info = self._get_instance_block_device_info(
+            context, instance, bdms=bdms)
+
+        # Handle ephemeral disk resizing
+        old_ephemeral_flavor = instance.old_flavor.ephemeral_gb
+        new_ephemeral_flavor = instance.new_flavor.ephemeral_gb
+        ephemerals = driver.block_device_info_get_ephemerals(block_device_info)
+        old_ephemeral_size = new_ephemeral_size = None
+
+        changed = old_ephemeral_flavor != new_ephemeral_flavor
+        single_ephemeral = len(ephemerals) == 1
+
+        # Current config uses the maximum ephemeral disk size of the old flavor
+        max_size = (
+            (len(ephemerals) == 0 and old_ephemeral_flavor == 0) or
+            (single_ephemeral and
+             old_ephemeral_flavor == ephemerals[0]['size'])
+        )
+
+        if changed and max_size:
+            old_ephemeral_size = (ephemerals[0]['size'] if len(ephemerals) > 0
+                                  else 0)
+            new_ephemeral_size = new_ephemeral_flavor
+
+        # Handle Swap resizing
+        swap = driver.block_device_info_get_swap(block_device_info)
+        old_swap_size = new_swap_size = None
+
+        if (instance.new_flavor.swap != instance.old_flavor.swap and
+            (swap['swap_size'] == instance.old_flavor.swap or
+             swap['swap_size'] > instance.new_flavor.swap)):
+            old_swap_size = swap['swap_size']
+            new_swap_size = instance.new_flavor.swap
+
+        if new_ephemeral_size is not None or new_swap_size is not None:
+            self._update_ephemeral_bdms(context, instance, block_device_info,
+                                        new_ephemeral_size, new_swap_size)
+
+        return old_ephemeral_size, old_swap_size
+
+    def _revert_resize_ephemeral_bdms(self, context, instance, old_disk_sizes):
+        """Revert resized ephemeral bdm objects in DB (for instance resizing).
+
+        Restore ephemeral and swap bdms previously resized with
+        _resize_ephemeral_bdms.
+
+        :param context: Request context object.
+        :param instance: An instance which bdms are to be reverted.
+        :param old_disk_sizes: An object created with _resize_ephemeral_bdms.
+        """
+        old_ephemeral_size, old_swap_size = old_disk_sizes
+        if old_ephemeral_size is None and old_swap_size is None:
+            return
+
+        LOG.debug(
+            f'Reverting ephemeral bdms: ephemeral_size={old_ephemeral_size}, '
+            f'swap_size={old_swap_size}.',
+            instance=instance,
+        )
+        bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+                context, instance.uuid)
+        block_device_info = driver.get_block_device_info(instance, bdms)
+        self._update_ephemeral_bdms(context, instance, block_device_info,
+                                    old_ephemeral_size, old_swap_size)
+
     def _finish_resize(self, context, instance, migration, disk_info,
                        image_meta, bdms, request_spec):
         resize_instance = False  # indicates disks have been resized
@@ -6146,6 +6324,11 @@ class ComputeManager(manager.Manager):
                 if old_flavor[key] != new_flavor[key]:
                     resize_instance = True
                     break
+            if resize_instance:
+                old_sizes = self._resize_ephemeral_bdms(
+                    context, instance, bdms)
+                instance.system_metadata['old_disk_sizes'] = jsonutils.dumps(
+                    old_sizes)
         instance.apply_migration_context()
 
         # NOTE(tr3buchet): setup networks on destination host
