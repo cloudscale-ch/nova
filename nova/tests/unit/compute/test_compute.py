@@ -4763,10 +4763,16 @@ class ComputeTestCase(BaseTestCase,
         fake_bdms = objects.BlockDeviceMappingList(objects=[
             objects.BlockDeviceMapping(destination_type='volume',
                                        attachment_id=uuids.attachment_id,
-                                       device_name='/dev/vdb'),
+                                       device_name='/dev/vdb',
+                                       no_device=False,
+                                       source_type=None),
             objects.BlockDeviceMapping(destination_type='volume',
-                                       attachment_id=None),
-            objects.BlockDeviceMapping(destination_type='local')
+                                       attachment_id=None,
+                                       no_device=False,
+                                       source_type=None),
+            objects.BlockDeviceMapping(destination_type='local',
+                                       no_device=False,
+                                       source_type=None)
         ])
 
         with test.nested(
@@ -4785,11 +4791,13 @@ class ComputeTestCase(BaseTestCase,
             mock.patch.object(instance, 'save'),
             mock.patch.object(self.compute.driver, 'get_volume_connector'),
             mock.patch.object(self.compute.volume_api, 'attachment_update'),
-            mock.patch.object(self.compute.volume_api, 'attachment_complete')
+            mock.patch.object(self.compute.volume_api, 'attachment_complete'),
+            mock.patch('nova.virt.driver.block_device_info_get_ephemerals'),
+            mock.patch('nova.virt.driver.block_device_info_get_swap')
         ) as (mock_get_bdm, mock_setup, mock_net_mig, mock_get_nw, mock_notify,
               mock_notify_action, mock_virt_mig, mock_get_blk, mock_mig_save,
               mock_inst_save, mock_get_vol_connector, mock_attachment_update,
-              mock_attachment_complete):
+              mock_attachment_complete, mock_get_ephemerals, mock_get_swap):
             def _mig_save():
                 self.assertEqual(migration.status, 'finished')
                 self.assertEqual(vm_state, instance.vm_state)
@@ -4861,9 +4869,9 @@ class ComputeTestCase(BaseTestCase,
                 instance, disk_info, 'fake-nwinfo1',
                 test.MatchType(objects.ImageMeta), resize_instance, mock.ANY,
                 'fake-bdminfo', power_on)
-            mock_get_blk.assert_called_once_with(self.context, instance,
-                                                 refresh_conn_info=True,
-                                                 bdms=fake_bdms)
+            mock_get_blk.assert_called_with(self.context, instance,
+                                            refresh_conn_info=True,
+                                            bdms=fake_bdms)
             mock_inst_save.assert_has_calls(inst_call_list)
             mock_mig_save.assert_called_once_with()
 
