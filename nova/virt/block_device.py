@@ -216,6 +216,9 @@ class DriverBlockDevice(dict):
                 setattr(self._bdm_obj, attr_name, self[lookup_name])
         self._bdm_obj.save()
 
+    def destroy(self):
+        self._bdm_obj.destroy()
+
 
 class DriverSwapBlockDevice(DriverBlockDevice):
     _fields = set([
@@ -227,6 +230,7 @@ class DriverSwapBlockDevice(DriverBlockDevice):
         'encryption_format',
         'encryption_options',
     ])
+    _proxy_as_attr_inherited = set(['volume_size'])
     _readonly_fields = set(['encrypted'])
     _update_on_save = {
         'disk_bus': None,
@@ -325,6 +329,7 @@ class DriverEphemeralBlockDevice(DriverBlockDevice):
         'encryption_format': None,
         'encryption_options': None,
     }
+    _proxy_as_attr_inherited = set(['volume_size'])
 
     def _transform(self):
         if not block_device.new_format_is_ephemeral(self._bdm_obj):
