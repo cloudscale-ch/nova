@@ -828,7 +828,8 @@ automatically confirms the resize operation after the configured interval.
 .. _resize_confirm_window: https://docs.openstack.org/nova/latest/configuration/config.html#DEFAULT.resize_confirm_window
 
 .. note:: There is a `known limitation <https://bugs.launchpad.net/nova/+bug/1558880>`__
-          that ephemeral disks are not resized.
+          that ephemeral disks are not resized if they are smaller than the
+          flavors ephemeral size or if there are multiple ephemeral disks.
 
 Normal response codes: 202
 

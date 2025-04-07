@@ -210,9 +210,13 @@ class DriverBlockDevice(dict):
                 setattr(self._bdm_obj, attr_name, self[lookup_name])
         self._bdm_obj.save()
 
+    def destroy(self):
+        self._bdm_obj.destroy()
+
 
 class DriverSwapBlockDevice(DriverBlockDevice):
     _fields = set(['device_name', 'swap_size', 'disk_bus'])
+    _proxy_as_attr_inherited = set(['volume_size'])
 
     _update_on_save = {'disk_bus': None,
                        'device_name': None}
@@ -230,6 +234,7 @@ class DriverSwapBlockDevice(DriverBlockDevice):
 class DriverEphemeralBlockDevice(DriverBlockDevice):
     _new_only_fields = set(['disk_bus', 'device_type', 'guest_format'])
     _fields = set(['device_name', 'size']) | _new_only_fields
+    _proxy_as_attr_inherited = set(['volume_size'])
 
     def _transform(self):
         if not block_device.new_format_is_ephemeral(self._bdm_obj):

@@ -278,7 +278,7 @@ class Image(metaclass=abc.ABCMeta):
         if size:
             # create_image() only creates the base image if needed, so
             # we cannot rely on it to exist here
-            if os.path.exists(base) and size > self.get_disk_size(base):
+            if os.path.exists(base) and size > self.get_disk_size(self.path):
                 self.resize_image(size)
 
             if (self.preallocate and self._can_fallocate() and
@@ -822,6 +822,9 @@ class Lvm(Image):
     # and migrate/resize is not supported with LVM yet, so this is a no-op
     def resize_image(self, size):
         pass
+
+    def get_disk_size(self, path):
+        return lvm.get_volume_size(path)
 
     @contextlib.contextmanager
     def remove_volume_on_error(self, path):

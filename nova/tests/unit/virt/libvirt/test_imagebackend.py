@@ -196,13 +196,12 @@ class _ImageTestCase(object):
         self.assertEqual(30 * units.Mi, disk.disk_total_bytes_sec)
         self.assertEqual(3 * units.Ki, disk.disk_total_iops_sec)
 
-    @mock.patch('nova.virt.disk.api.get_disk_size')
-    def test_get_disk_size(self, get_disk_size):
+    def _test_get_disk_size(self, get_disk_size, size_call_attr='path'):
         get_disk_size.return_value = 2361393152
 
         image = self.image_class(self.INSTANCE, self.NAME)
         self.assertEqual(2361393152, image.get_disk_size(image.path))
-        get_disk_size.assert_called_once_with(image.path)
+        get_disk_size.assert_called_once_with(getattr(image, size_call_attr))
 
     def _test_libvirt_info_scsi_with_unit(self, disk_unit):
         # The address should be set if bus is scsi and unit is set.
@@ -841,9 +840,11 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
 
         mock_exists.side_effect = fake_exists
 
-        # Fake create_volume causes exists to return true for the volume
+        # Fake create_volume causes exists to return true and set the size for
+        # the volume
         def fake_create_volume(vg, lv, size, sparse=False):
             exists.add(os.path.join('/dev', vg, lv))
+            mock_lvm.get_volume_size.return_value = size
 
         mock_lvm.create_volume.side_effect = fake_create_volume
 
@@ -917,6 +918,10 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
                                             sparse=False)
         fn.assert_called_once_with(target=self.PATH, ephemeral_size=None)
         mock_remove.assert_called_once_with([self.PATH])
+
+    @mock.patch('nova.virt.libvirt.storage.lvm.get_volume_size')
+    def test_get_disk_size(self, get_disk_size):
+        self._test_get_disk_size(get_disk_size)
 
     def test_prealloc_image(self):
         CONF.set_override('preallocate_images', 'space')
@@ -1264,6 +1269,10 @@ class EncryptedLvmTestCase(_ImageTestCase, test.NoDBTestCase):
                 self.PATH.rpartition('/')[2])
             self.lvm.remove_volumes.assert_called_with([self.LV_PATH])
 
+    @mock.patch('nova.virt.libvirt.storage.lvm.get_volume_size')
+    def test_get_disk_size(self, get_disk_size):
+        self._test_get_disk_size(get_disk_size)
+
     def test_prealloc_image(self):
         self.flags(preallocate_images='space')
         fake_processutils.fake_execute_clear_log()
@@ -1525,13 +1534,9 @@ class RbdTestCase(_ImageTestCase, test.NoDBTestCase):
 
         self.assertEqual(image.path, rbd_path)
 
-    def test_get_disk_size(self):
-        image = self.image_class(self.INSTANCE, self.NAME)
-        with mock.patch.object(image.driver, 'size') as size_mock:
-            size_mock.return_value = 2361393152
-
-            self.assertEqual(2361393152, image.get_disk_size(image.path))
-            size_mock.assert_called_once_with(image.rbd_name)
+    @mock.patch('nova.storage.rbd_utils.RBDDriver.size')
+    def test_get_disk_size(self, get_disk_size):
+        self._test_get_disk_size(get_disk_size, 'rbd_name')
 
     @mock.patch.object(images, 'qemu_img_info',
                        return_value=imageutils.QemuImgInfo())
