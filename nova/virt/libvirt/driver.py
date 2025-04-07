@@ -226,11 +226,6 @@ MIN_LIBVIRT_AARCH64_CPU_COMPARE = (6, 9, 0)
 # Virtuozzo driver support
 MIN_VIRTUOZZO_VERSION = (7, 0, 0)
 
-
-# Names of the types that do not get compressed during migration
-NO_COMPRESSION_TYPES = ('qcow2',)
-
-
 # number of serial console limit
 QEMU_MAX_SERIAL_PORTS = 4
 # Qemu supports 4 serial consoles, we remove 1 because of the PTY one defined
@@ -11276,7 +11271,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 if fname == 'disk.swap':
                     continue
 
-                compression = info['type'] not in NO_COMPRESSION_TYPES
+                compression = CONF.libvirt.remote_copy_compression
                 libvirt_utils.copy_image(from_path, img_path, host=dest,
                                          on_execute=on_execute,
                                          on_completion=on_completion,
